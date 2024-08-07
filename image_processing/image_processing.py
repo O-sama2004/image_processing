@@ -9,7 +9,8 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import json
-
+from collections import deque
+import time
 
 class ImageProcessing(Node):
     def __init__(self):
@@ -24,6 +25,10 @@ class ImageProcessing(Node):
         self.yolo_model = YOLO('weights_openvino_model') # TO DO: Change model name
         self.get_logger().info('Image Processing node has been started.')
 
+        # Initialize variables for detection tracking
+        self.detection_start_time = None
+        self.frame_buffer = deque(maxlen=120)  # Assuming 30 FPS, 4 seconds = 120 frames
+        self.video_count = 0
 
     def video_listener_callback(self, msg: Image):
         try:
@@ -71,6 +76,20 @@ class ImageProcessing(Node):
             if uav_detected:
                 break
 
+        # Handle detection tracking and video saving
+        current_time = time.time()
+        self.frame_buffer.append(image)
+
+        if uav_detected:
+            if self.detection_start_time is None:
+                self.detection_start_time = current_time
+            elif current_time - self.detection_start_time >= 4:
+                self.save_video()
+                self.detection_start_time = None
+        else:
+            self.detection_start_time = None
+            self.frame_buffer.clear()
+
         # Convert OpenCV image to ROS Image message
         try:
             detection_msg = self.bridge.cv2_to_imgmsg(image, encoding='bgr8')
@@ -78,11 +97,23 @@ class ImageProcessing(Node):
         except CvBridgeError as e:
             self.get_logger().error('CvBridge Error: {}'.format(e))
 
-
-        # Display the image with detections
+        # Display the image with detections on a tab
         cv2.imshow("Detection", image)
+        
         if cv2.waitKey(1) & 0xFF == ord('q'):
             rclpy.shutdown()
+
+    def save_video(self):
+        self.video_count += 1
+        filename = f'detection_video_{self.video_count}.mp4'
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(filename, fourcc, 30, (self.frame_buffer[0].shape[1], self.frame_buffer[0].shape[0]))
+
+        for frame in self.frame_buffer:
+            out.write(frame)
+
+        out.release()
+        self.get_logger().info(f'Saved video: {filename}')
 
 def main(args=None):
     rclpy.init(args=args)
